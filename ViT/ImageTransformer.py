@@ -12,14 +12,18 @@ from transformers import (
     DefaultDataCollator
 )
 
-
+# Annotation files
 BASE = os.path.dirname(os.path.abspath(__file__))
 ANNOTATION_DIR = os.path.join(
     BASE, "mtsd_fully_annotated_annotation", "mtsd_v2_fully_annotated", "annotations"
 )
+
+# Train/val/test split lists
 SPLITS_DIR = os.path.join(
     BASE, "mtsd_fully_annotated_annotation", "mtsd_v2_fully_annotated", "splits"
 )
+
+# Image directories
 IMAGE_DIRS = [
     os.path.join(BASE, "mtsd_fully_annotated_images.train.0", "images"),
     os.path.join(BASE, "mtsd_fully_annotated_images.train.1", "images"),
@@ -28,9 +32,10 @@ IMAGE_DIRS = [
     os.path.join(BASE, "mtsd_fully_annotated_images.test", "images"),
 ]
 
+# Padding applied to bounding boxes when cropping objects
 BBOX_PADDING = 0.15
 
-
+#Custom dataset for processing the images with annotations
 class TrafficSignDataset(Dataset):
     def __init__(self, image_list, annotations, image_paths, processor):
         self.samples = image_list
@@ -63,18 +68,23 @@ class TrafficSignDataset(Dataset):
         return inputs
 
 
+#Helper function to read files
 def read(path):
     with open(path, "r") as f:
         return [x.strip() for x in f if x.strip()]
 
-
+#Actually load train/test/validate datasets 
 def get_annotation_splits():
     test = read(os.path.join(SPLITS_DIR, "test.txt"))
     train = read(os.path.join(SPLITS_DIR, "train.txt"))
     val = read(os.path.join(SPLITS_DIR, "val.txt"))
     return test, train, val
 
-
+"""
+    This is to parse annotation JSON files and extract:
+    - first valid traffic sign object per image
+    - bounding box + label
+"""
 def build_annotations(annotation_dir):
     annotations = {}
 
@@ -106,7 +116,7 @@ def build_annotations(annotation_dir):
 
     return annotations
 
-
+#This is to build a mapping from image_id to the full file path
 def build_image_index():
     index = {}
     for d in IMAGE_DIRS:
@@ -117,7 +127,7 @@ def build_image_index():
                 index[fname[:-4]] = os.path.join(d, fname)
     return index
 
-
+#This defines the evaluation metrics 
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     preds = np.argmax(logits, axis=-1)
@@ -129,23 +139,30 @@ def compute_metrics(eval_pred):
 
 
 def main():
+    #This loads the pretrained ViT model
     checkpoint = "google/vit-base-patch16-224-in21k"
     processor = AutoImageProcessor.from_pretrained(checkpoint)
 
+    #This loads the dataset splits. Due to issues with the 
+    #test dataset, we don't use it
     test_list, train_list, val_list = get_annotation_splits()
 
+    #This loads the annotations 
     raw_annotations = build_annotations(ANNOTATION_DIR)
 
+    #This builds the actual vocabulary for the labels 
     classes = sorted(set(a["label"] for a in raw_annotations.values()))
     label2id = {c: i for i, c in enumerate(classes)}
     id2label = {i: c for c, i in label2id.items()}
 
+    #This converts annotations to numeric labels
     annotations = {
         k: {"label": label2id[v["label"]], "bbox": v["bbox"]}
         for k, v in raw_annotations.items()
     }
-    image_paths = build_image_index()
+    image_paths = build_image_index() #This loads the image paths
 
+    # This is to filter ids so that they are both in annotations and images
     def usable(ids):
         return [i for i in ids if i in annotations and i in image_paths]
 
@@ -154,9 +171,11 @@ def main():
 
     print(f"Classes: {len(label2id)} | train: {len(train_list)} | val: {len(val_list)}")
 
+    # This creates the PyTorch datasets
     train_dataset = TrafficSignDataset(train_list, annotations, image_paths, processor)
     val_dataset = TrafficSignDataset(val_list, annotations, image_paths, processor)
 
+    # This laods the pretrained ViT model
     model = AutoModelForImageClassification.from_pretrained(
         checkpoint,
         num_labels=len(label2id),
@@ -164,6 +183,7 @@ def main():
         label2id=label2id
     )
 
+    # This is the training configuration
     args = TrainingArguments(
         output_dir="./vit-traffic-sign",
         eval_strategy="epoch",
@@ -185,6 +205,7 @@ def main():
         greater_is_better=True,
     )
 
+    #Set up for the HuggingFace Trainer
     trainer = Trainer(
         model=model,
         args=args,
@@ -194,8 +215,13 @@ def main():
         compute_metrics=compute_metrics,
     )
 
+    #Train the model
     trainer.train()
+
+    #Save the final model
     trainer.save_model("./vit-traffic-sign/final")
+    
+    #Evaluate the model and print it out
     metrics = trainer.evaluate()
     print(metrics)
 
