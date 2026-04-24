@@ -1,0 +1,12 @@
+# Dataset (images + annotations)
+mtsd_fully_annotated_annotation/
+mtsd_fully_annotated_images.*/
+
+# Training artifacts too large / local-only
+checkpoints/
+cache/
+
+# Python / venv
+.venv/
+__pycache__/
+*.pyc
